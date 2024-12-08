@@ -5,6 +5,9 @@ import sqlite3
 import json
 from typing import TypedDict
 from errcodes import ERROR_CODES, ErrCode
+import readchar
+from tabulate import tabulate
+from datetime import datetime
 
 ADMIN_AUTH = "12345"
 
@@ -19,9 +22,58 @@ PORT = 45254
 connections: dict[int, websockets.ServerProtocol] = {}
 
 running = True
+server = None
 
 database_conn = sqlite3.connect('./answers.db')
 database_cursor = database_conn.cursor()
+
+start_time = datetime.now()
+total_conns_ever = 0
+total_disconns_ever = 0
+
+async def input_loop():
+    while True:
+        usr_inp = await asyncio.to_thread(readchar.readchar)
+
+        if usr_inp.lower() == "c":
+            headers = ["ID", "Remote Address"]
+            data = []
+            for i, conn in enumerate(connections.values()):
+                c_ip, c_port, *_ = conn.remote_address
+                data.append([
+                    i,
+                    f"{c_ip}:{c_port}"
+                ])
+
+            data.append(["", f"Total Connections: {len(connections)}"])
+
+            print(tabulate(
+                data,
+                headers=headers,
+                tablefmt="simple_grid"
+            ))
+
+        elif usr_inp.lower() == "s":
+
+            elapsed_time = (datetime.now() - start_time)
+            seconds = int(elapsed_time.total_seconds())
+            hours, remainder = divmod(seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+
+            print(f"Server uptime         : {hours:02}:{minutes:02}:{seconds:02}")
+            print(f"Current connections   : {len(connections)}")
+            print(f"Total connects ever   : {total_conns_ever}")
+            print(f"Total disconnects ever: {total_disconns_ever}")
+
+        elif usr_inp.lower() == "q":
+            print("[QUIT ]: Shutting down server")
+
+            global running
+            running = False
+            
+            server.close()
+
+            break
 
 def database_setup():
     database_cursor.execute("""
@@ -54,6 +106,8 @@ def write_question_to_db(question: str, answer: str) -> ErrCode:
         return ERROR_CODES.DB_WRITEEXCEPTION;
 
 def handle_disconnect(serverConn):
+    global total_disconns_ever
+    total_disconns_ever += 1
     client_ip, client_port, *_ = serverConn.remote_address
     print(f"[CONN-]: {client_ip}:{client_port} disconnected; {len(connections) - 1} connections")
 
@@ -61,6 +115,8 @@ def handle_disconnect(serverConn):
         del connections[client_port]
 
 async def conn(serverConn: websockets.ServerProtocol):
+    global total_conns_ever
+    total_conns_ever += 1
     client_ip, client_port, *_ = serverConn.remote_address
     print(f"[CONN+]: {client_ip}:{client_port} connected; {len(connections) + 1} connections")
 
@@ -79,6 +135,9 @@ async def conn(serverConn: websockets.ServerProtocol):
             await serverConn.close()
             break
 
+        if data == "keepalive":
+            continue
+
         print(f"[RECV ]: [{client_ip}:{client_port}] {data}")
         if data == "close":
             handle_disconnect(serverConn)
@@ -91,7 +150,11 @@ async def conn(serverConn: websockets.ServerProtocol):
             if j_data["action"] == "qtoa":
                 answer_to_question = get_question_answer(j_data["data"]) or "None"
                 print(answer_to_question)
-                await serverConn.send(answer_to_question)
+                ret_string = json.dumps({
+                    "code": 2,
+                    "answer": answer_to_question
+                })
+                await serverConn.send(ret_string)
             if j_data["action"] == "wqdb":
                 if j_data["auth"] == ADMIN_AUTH:
                     question, answer, *_ = j_data["data"].split("`~!")
@@ -113,14 +176,27 @@ async def conn(serverConn: websockets.ServerProtocol):
             pass
 
 async def main():
+    global server
+
+    print("[INIT ]: python websocket database hoster made by iTappedSpace, press q to exit")
+    print("         c: connections")
+    print("         s: statistics\n\n")
+
     print("[INIT ]: Loading database")
     database_setup()
     print("[INIT ]: Database loaded")
 
     print(f"[INIT ]: Listening on {IP}:{PORT}")
-    server = await websockets.serve(conn, IP, PORT)
+    server = await websockets.serve(
+        conn,
+        IP,
+        PORT,
+        ping_interval=None,
+        ping_timeout=None,
+        close_timeout=None
+    )
 
-    await server.wait_closed()
+    await asyncio.gather(server.wait_closed(), input_loop())
 
 if __name__ == "__main__":
     try:
