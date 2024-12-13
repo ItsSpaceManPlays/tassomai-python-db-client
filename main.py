@@ -61,6 +61,7 @@ async def input_loop():
             minutes, seconds = divmod(remainder, 60)
 
             print(f"Server uptime         : {hours:02}:{minutes:02}:{seconds:02}")
+            print(f"Current question count: {get_question_count()}")
             print(f"Current connections   : {len(connections)}")
             print(f"Total connects ever   : {total_conns_ever}")
             print(f"Total disconnects ever: {total_disconns_ever}")
@@ -78,7 +79,7 @@ async def input_loop():
 def database_setup():
     database_cursor.execute("""
                             CREATE TABLE IF NOT EXISTS questions (
-                                question TEXT NOT NULL,
+                                question TEXT NOT NULL UNIQUE,
                                 answer TEXT NOT NULL
                             );
     """)
@@ -104,6 +105,13 @@ def write_question_to_db(question: str, answer: str) -> ErrCode:
         return ERROR_CODES.DB_WRITESUCCESS;
     except:
         return ERROR_CODES.DB_WRITEEXCEPTION;
+
+def get_question_count():
+    database_cursor.execute("SELECT * FROM questions")
+
+    columns = database_cursor.fetchall()
+
+    return len(columns)
 
 def handle_disconnect(serverConn):
     global total_disconns_ever
